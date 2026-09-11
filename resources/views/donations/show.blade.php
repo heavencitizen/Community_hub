@@ -1,5 +1,13 @@
 <x-app-layout>
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6" x-data="{ donationAmount: 50000, customAmount: '' }">
+    @php
+        // Filter khusus memanggil transaksi yang pembayarannya sudah sukses/lunas
+        $donators = $donation->transactions()
+            ->where('payment_status', 'completed')
+            ->orderBy('created_at', 'desc')
+            ->get();
+    @endphp
+
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6" x-data="{ donationAmount: 50000, customAmount: 50000 }">
         <div class="rounded-2xl overflow-hidden bg-white border border-slate-200 shadow-sm">
             <div class="h-48 sm:h-60 bg-slate-900 relative">
                 <img src="{{ $donation->banner_url }}" alt="{{ $donation->title }}" class="w-full h-full object-cover">
@@ -26,23 +34,40 @@
 
                     <!-- Riwayat Donatur -->
                     <div class="pt-4 border-t border-slate-100 space-y-2">
-                        <h3 class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Donatur Terkini</h3>
-                        <div class="space-y-1.5">
-                            @forelse($donation->transactions as $trx)
-                                <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 text-xs">
-                                    <div class="flex items-center gap-2">
-                                        <div class="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
-                                            <i class="fa fa-hand-holding-heart text-[10px]"></i>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Donatur Terkini</h3>
+                            <span class="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">{{ $donators->count() }} Orang</span>
+                        </div>
+                        
+                        <div class="space-y-2">
+                            @forelse($donators as $trx)
+                                <div class="p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs">
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-2.5">
+                                            <div class="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">
+                                                <i class="fa fa-hand-holding-heart text-[10px]"></i>
+                                            </div>
+                                            <div>
+                                                <p class="font-bold text-slate-800 text-[11px]">{{ $trx->customer_name ?? 'Hamba Allah' }}</p>
+                                                <p class="text-[9px] text-slate-400">{{ $trx->created_at->diffForHumans() }}</p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <p class="font-bold text-slate-800 text-[11px]">{{ $trx->customer_name }}</p>
-                                            <p class="text-[9px] text-slate-400">{{ $trx->created_at->diffForHumans() }}</p>
-                                        </div>
+                                        <span class="font-black text-emerald-600 text-xs shrink-0">Rp{{ number_format($trx->amount, 0, ',', '.') }}</span>
                                     </div>
-                                    <span class="font-black text-emerald-600 text-xs">Rp{{ number_format($trx->amount, 0, ',', '.') }}</span>
+                                    
+                                    <!-- Logika Pemanggil Doa / Pesan Kebaikan -->
+                                    @if($trx->notes)
+                                        <div class="mt-2 text-[11px] text-slate-500 italic bg-white p-2.5 rounded-lg border border-slate-100 relative">
+                                            <i class="fa fa-quote-left text-slate-300 absolute top-2.5 left-2.5 text-[8px]"></i>
+                                            <p class="pl-4 relative z-10 leading-relaxed">{{ $trx->notes }}</p>
+                                        </div>
+                                    @endif
                                 </div>
                             @empty
-                                <p class="text-xs text-slate-400 py-1">Jadilah donatur pertama untuk program kebaikan ini!</p>
+                                <div class="text-center py-6 border border-dashed border-slate-200 rounded-xl bg-slate-50">
+                                    <i class="fa fa-heart text-2xl text-slate-300 mb-1"></i>
+                                    <p class="text-xs text-slate-400">Jadilah donatur pertama untuk program kebaikan ini!</p>
+                                </div>
                             @endforelse
                         </div>
                     </div>
@@ -89,7 +114,7 @@
 
                             <div>
                                 <label class="block font-bold text-slate-700 mb-0.5 text-[11px]">Nominal Lainnya (Rp)</label>
-                                <input type="number" name="amount" x-model="customAmount" min="5000" required placeholder="Minimal Rp5.000" class="w-full rounded-xl bg-white border border-slate-200 text-xs py-2 px-3">
+                                <input type="number" name="amount" x-model="customAmount" @input="donationAmount = customAmount" min="5000" required placeholder="Minimal Rp5.000" class="w-full rounded-xl bg-white border border-slate-200 text-xs py-2 px-3">
                             </div>
 
                             @guest
@@ -105,7 +130,7 @@
 
                             <div>
                                 <label class="block font-bold text-slate-700 mb-0.5 text-[11px]">Doa / Pesan Kebaikan</label>
-                                <textarea name="notes" rows="2" placeholder="Tuliskan doa atau pesan..." class="w-full rounded-xl bg-white border border-slate-200 text-xs py-1.5 px-3"></textarea>
+                                <textarea name="notes" rows="2" placeholder="Tuliskan doa atau pesan..." class="w-full rounded-xl bg-white border border-slate-200 text-xs py-1.5 px-3 resize-none"></textarea>
                             </div>
 
                             <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-500/20 transition flex items-center justify-center gap-1.5">

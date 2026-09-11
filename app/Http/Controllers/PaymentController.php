@@ -9,9 +9,29 @@ use App\Models\Ticket;
 use App\Models\Transaction;
 use App\Models\UserNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
 {
+    public function __construct()
+    {
+        // Konfigurasi Midtrans
+        \Midtrans\Config::$serverKey = env('MIDTRANS_SERVER_KEY');
+        \Midtrans\Config::$isProduction = env('MIDTRANS_IS_PRODUCTION', false);
+        \Midtrans\Config::$isSanitized = true;
+        
+        // 3DS dimatikan agar pengujian kartu kredit Sandbox tidak meminta OTP/PIN
+        \Midtrans\Config::$is3ds = false;
+
+        // Mematikan verifikasi SSL khusus untuk testing lokal XAMPP
+        // Dan mencegah error undefined array 10023 dari Midtrans
+        \Midtrans\Config::$curlOptions = [
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_HTTPHEADER => [] 
+        ];
+    }
+
     /**
      * Tampilan checkout pembayaran interaktif
      */
@@ -19,12 +39,10 @@ class PaymentController extends Controller
     {
         $transaction = Transaction::where('transaction_code', $transactionCode)->firstOrFail();
 
-        // Otorisasi kepemilikan transaksi
         if ($transaction->user_id && $transaction->user_id !== auth()->id() && (! auth()->check() || ! auth()->user()->isSuperAdmin())) {
-            abort(403, 'Anda tidak memiliki hak untuk mengakses transaksi ini.');
+            abort(403, 'Pengguna tidak memiliki hak untuk mengakses transaksi ini.');
         }
 
-        // Ambil data referensi
         $item = null;
         if ($transaction->type === 'product') {
             $item = CommunityProduct::with('community')->find($transaction->reference_id);
@@ -36,68 +54,123 @@ class PaymentController extends Controller
             $item = Ticket::with('event.community')->find($transaction->reference_id);
         }
 
+        // Token tidak di-generate di sini lagi, murni mengembalikan tampilan UI
         return view('payment.checkout', compact('transaction', 'item'));
     }
 
     /**
-     * Simulasi proses pembayaran dan update status
+     * Endpoint API untuk mengambil token dinamis spesifik 1 metode pembayaran (Direct Payment)
      */
-    public function process(Request $request, string $transactionCode)
+    public function getToken(Request $request, string $transactionCode)
     {
         $transaction = Transaction::where('transaction_code', $transactionCode)->firstOrFail();
 
-        // Otorisasi kepemilikan transaksi
         if ($transaction->user_id && $transaction->user_id !== auth()->id() && (! auth()->check() || ! auth()->user()->isSuperAdmin())) {
-            abort(403, 'Anda tidak memiliki hak untuk memproses transaksi ini.');
+            return response()->json(['error' => 'Akses ditolak'], 403);
         }
 
-        $request->validate([
-            'payment_method' => 'required|string',
-        ]);
+        $method = $request->input('payment_method');
+        $enabledPayments = [];
 
-        $paymentMethod = $request->payment_method;
-        $paymentCode = null;
-
-        if (str_contains($paymentMethod, '_va')) {
-            $bankPrefix = match ($paymentMethod) {
-                'bca_va' => '88000',
-                'mandiri_va' => '89000',
-                'bni_va' => '87000',
-                'bri_va' => '86000',
-                'btn_va' => '85000',
-                'cimb_va' => '84000',
-                'mega_va' => '83000',
-                'maybank_va' => '82000',
-                'seabank_va' => '81000',
-                'allobank_va' => '80000',
-                default => '80000',
-            };
-            $paymentCode = $bankPrefix.rand(10000000, 99999999);
-        } elseif ($paymentMethod === 'qris') {
-            $paymentCode = '00020101021226590014ID.LINKAJA.WWW011893600014'.rand(100000, 999999);
-        } else {
-            $paymentCode = 'PAY-'.strtoupper(bin2hex(random_bytes(4)));
+        // Konversi pilihan antarmuka web menjadi parameter spesifik Midtrans
+        switch ($method) {
+            case 'credit_card': $enabledPayments = ['credit_card']; break;
+            case 'bca_va': $enabledPayments = ['bca_va']; break;
+            case 'mandiri_va': $enabledPayments = ['echannel']; break; // Midtrans menggunakan 'echannel' untuk Mandiri
+            case 'bni_va': $enabledPayments = ['bni_va']; break;
+            case 'bri_va': $enabledPayments = ['bri_va']; break;
+            case 'cimb_va': $enabledPayments = ['cimb_va']; break;
+            case 'gopay': $enabledPayments = ['gopay']; break;
+            case 'shopeepay': $enabledPayments = ['shopeepay']; break;
+            case 'qris':
+            case 'ovo':
+            case 'dana': 
+                $enabledPayments = ['qris']; break; // Menyatukan E-Wallet lain melalui QRIS universal
+            default: 
+                $enabledPayments = ['other_va']; break; // Bank lain seperti BTN, Mega, Maybank, dll
         }
 
-        // Tandai transaksi lunas
-        $transaction->update([
-            'payment_method' => $paymentMethod,
-            'payment_status' => 'completed',
-            'payment_code' => $paymentCode,
-            'payment_details' => [
-                'paid_at' => now()->toDateTimeString(),
-                'method_label' => strtoupper(str_replace('_', ' ', $paymentMethod)),
-                'ip_address' => $request->ip(),
+        $params = [
+            'transaction_details' => [
+                'order_id' => $transaction->transaction_code,
+                'gross_amount' => (int) $transaction->total_amount,
             ],
-        ]);
+            'customer_details' => [
+                'first_name' => $transaction->customer_name ?? 'Pengguna',
+                'email' => $transaction->customer_email ?? 'customer@example.com',
+            ],
+            // Memaksa Midtrans hanya menampilkan satu metode ini
+            'enabled_payments' => $enabledPayments 
+        ];
 
-        // Update target data sesuai tipe transaksi & kirim notifikasi
+        try {
+            $snapToken = \Midtrans\Snap::getSnapToken($params);
+            return response()->json(['snap_token' => $snapToken]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Endpoint Webhook dari Midtrans
+     */
+    public function webhook(Request $request)
+    {
+        try {
+            $notif = new \Midtrans\Notification();
+        } catch (\Exception $e) {
+            Log::error('Midtrans Error: ' . $e->getMessage());
+            return response()->json(['message' => 'Error processing notification'], 500);
+        }
+
+        $transactionStatus = $notif->transaction_status;
+        $paymentType = $notif->payment_type;
+        $orderId = $notif->order_id;
+        $fraudStatus = $notif->fraud_status;
+
+        $transaction = Transaction::where('transaction_code', $orderId)->first();
+
+        if (!$transaction) {
+            return response()->json(['message' => 'Transaction not found'], 404);
+        }
+
+        if ($transactionStatus == 'capture' || $transactionStatus == 'settlement') {
+            if ($fraudStatus == 'challenge') {
+                $transaction->update(['payment_status' => 'challenge']);
+            } else {
+                // Pastikan tidak mengeksekusi dua kali jika sudah lunas
+                if ($transaction->payment_status !== 'completed') {
+                    $transaction->update([
+                        'payment_method' => $paymentType,
+                        'payment_status' => 'completed',
+                        'payment_code' => '-', // Midtrans handle ini
+                        'payment_details' => [
+                            'paid_at' => now()->toDateTimeString(),
+                            'method_label' => strtoupper(str_replace('_', ' ', $paymentType)),
+                        ],
+                    ]);
+
+                    $this->handleSuccessfulPayment($transaction);
+                }
+            }
+        } else if ($transactionStatus == 'cancel' || $transactionStatus == 'deny' || $transactionStatus == 'expire') {
+            $transaction->update(['payment_status' => 'failed']);
+        } else if ($transactionStatus == 'pending') {
+            $transaction->update(['payment_status' => 'pending']);
+        }
+
+        return response()->json(['message' => 'Notification processed successfully']);
+    }
+
+    /**
+     * Logika Bisnis: Donasi, Produk, Lelang, Tiket
+     */
+    private function handleSuccessfulPayment($transaction)
+    {
         if ($transaction->type === 'donation') {
             $donation = Donation::find($transaction->reference_id);
             if ($donation) {
                 $donation->increment('collected_amount', $transaction->amount);
-
-                // Notifikasi ke inisiator donasi
                 UserNotification::send(
                     $donation->user_id,
                     $transaction->user_id,
@@ -116,8 +189,6 @@ class PaymentController extends Controller
                 if ($product->stock === 0) {
                     $product->update(['status' => 'sold_out']);
                 }
-
-                // Notifikasi ke penjual
                 UserNotification::send(
                     $product->user_id,
                     $transaction->user_id,
@@ -133,8 +204,6 @@ class PaymentController extends Controller
             $auction = CommunityAuction::find($transaction->reference_id);
             if ($auction) {
                 $auction->update(['status' => 'completed']);
-
-                // Notifikasi ke pelelang
                 UserNotification::send(
                     $auction->user_id,
                     $transaction->user_id,
@@ -150,22 +219,18 @@ class PaymentController extends Controller
             $ticket = Ticket::with(['event.community', 'user'])->find($transaction->reference_id);
             if ($ticket) {
                 $ticket->update(['status' => 'approved']);
-
-                // Notifikasi ke pembeli tiket
                 if ($ticket->user_id) {
                     UserNotification::send(
                         $ticket->user_id,
                         null,
                         'ticket_approved',
                         'E-Ticket QR Code Terbit!',
-                        'Pembayaran tiket event "'.$ticket->event->title.'" berhasil. E-Ticket QR Code Anda telah aktif.',
+                        'Pembayaran tiket event "'.$ticket->event->title.'" berhasil. E-Ticket QR Code pengguna telah aktif.',
                         route('tickets.show', $ticket->id),
                         'fa-qrcode',
                         'text-indigo-500'
                     );
                 }
-
-                // Notifikasi ke ketua komunitas / penyelenggara
                 UserNotification::send(
                     $ticket->event->community->user_id,
                     $ticket->user_id,
@@ -178,9 +243,6 @@ class PaymentController extends Controller
                 );
             }
         }
-
-        return redirect()->route('payment.success', $transaction->transaction_code)
-            ->with('success', 'Pembayaran berhasil dikonfirmasi!');
     }
 
     /**
@@ -189,6 +251,23 @@ class PaymentController extends Controller
     public function success(string $transactionCode)
     {
         $transaction = Transaction::where('transaction_code', $transactionCode)->firstOrFail();
+
+        // --- TRIK AKAL-AKALAN TANPA NGROK (KHUSUS LOCALHOST) ---
+        // Memaksa pelunasan langsung dieksekusi saat diarahkan ke halaman sukses
+        if ($transaction->payment_status !== 'completed') {
+            $transaction->update([
+                'payment_status' => 'completed',
+                'payment_code' => '-', 
+                'payment_details' => [
+                    'paid_at' => now()->toDateTimeString(),
+                    'method_label' => 'SIMULASI LOKAL',
+                ],
+            ]);
+
+            // Mengeksekusi penambahan jumlah donasi dan memunculkan nama donatur
+            $this->handleSuccessfulPayment($transaction);
+        }
+        // --------------------------------------------------------
 
         $item = null;
         if ($transaction->type === 'product') {
@@ -202,5 +281,36 @@ class PaymentController extends Controller
         }
 
         return view('payment.success', compact('transaction', 'item'));
+    }
+
+    /**
+     * Mengirim notifikasi jika pengguna menutup popup sebelum membayar
+     */
+    public function pendingNotification(string $transactionCode)
+    {
+        $transaction = Transaction::where('transaction_code', $transactionCode)->firstOrFail();
+
+        if ($transaction->user_id && $transaction->payment_status !== 'completed') {
+            // Menggunakan Cache agar notifikasi tidak spam jika popup ditutup berkali-kali (cooldown 5 menit)
+            $cacheKey = 'notif_pending_' . $transaction->transaction_code;
+            
+            if (!\Illuminate\Support\Facades\Cache::has($cacheKey)) {
+                UserNotification::send(
+                    $transaction->user_id,
+                    null,
+                    'payment_pending',
+                    'Menunggu Pembayaran',
+                    'Selesaikan pembayaran untuk pesanan #' . $transaction->transaction_code . ' sebelum batas waktu habis.',
+                    route('payment.checkout', $transaction->transaction_code),
+                    'fa-clock',
+                    'text-amber-500'
+                );
+                
+                // Kunci cache selama 5 menit agar tidak berlipat ganda
+                \Illuminate\Support\Facades\Cache::put($cacheKey, true, now()->addMinutes(5));
+            }
+        }
+
+        return response()->json(['success' => true]);
     }
 }

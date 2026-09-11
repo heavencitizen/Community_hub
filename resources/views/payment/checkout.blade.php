@@ -19,8 +19,7 @@
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             <!-- Left 7 Columns: Standardized Payment Method Selector -->
             <div class="lg:col-span-7 space-y-4">
-                <form action="{{ route('payment.process', $transaction->transaction_code) }}" method="POST" class="space-y-4">
-                    @csrf
+                <div class="space-y-4">
                     <input type="hidden" name="payment_method" :value="selectedMethod">
 
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
@@ -210,14 +209,16 @@
                         </div>
 
                         <!-- Submit Button -->
-                        <div class="pt-2">
-                            <button type="submit" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition flex items-center justify-center gap-2">
-                                <i class="fa fa-lock text-xs"></i>
-                                <span>Bayar Sekarang • Rp{{ number_format($transaction->total_amount, 0, ',', '.') }}</span>
+                        <div class="pt-4 pb-2">
+                            <!-- Menggunakan atribut onclick memanggil fungsi JavaScript langsung -->
+                            <button id="pay-button" onclick="payWithMidtrans()" type="button" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-black text-xs shadow-lg shadow-indigo-500/30 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2">
+                                <i class="fa fa-lock text-xs opacity-80"></i>
+                                <span class="tracking-wide">BAYAR SEKARANG &bull; Rp{{ number_format($transaction->total_amount, 0, ',', '.') }}</span>
                             </button>
+                            <p class="text-center text-[10px] text-slate-400 mt-3 font-medium">Pembayaran akan diproses secara aman oleh <span class="font-bold text-indigo-500">Midtrans</span></p>
                         </div>
                     </div>
-                </form>
+                </div>
 
                 <!-- Compact Instructions Accordion -->
                 <div class="bg-white rounded-2xl border border-slate-200 p-4 space-y-2 text-xs" x-data="{ openGuide: false }">
@@ -231,7 +232,7 @@
                     <div x-show="openGuide" x-cloak class="pt-2 text-[11px] text-slate-500 space-y-1.5 leading-relaxed border-t border-slate-100 mt-2">
                         <p>1. Pilih metode pembayaran di atas dan klik <strong>Bayar Sekarang</strong>.</p>
                         <p>2. Kode pembayaran / nomor VA / barcode QRIS akan terbit secara instan.</p>
-                        <p>3. Selesaikan transfer dari aplikasi mobile banking / e-wallet Anda.</p>
+                        <p>3. Selesaikan transfer dari aplikasi mobile banking / e-wallet pengguna.</p>
                         <p>4. Sistem akan otomatis memverifikasi dalam hitungan detik tanpa perlu konfirmasi manual.</p>
                     </div>
                 </div>
@@ -307,4 +308,91 @@
             </div>
         </div>
     </div>
+
+   <!-- Script Midtrans & SweetAlert2 -->
+   <script src="https://app.sandbox.midtrans.com/snap/snap.js" data-client-key="{{ env('MIDTRANS_CLIENT_KEY') }}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script type="text/javascript">
+        async function payWithMidtrans() {
+            const payButton = document.getElementById('pay-button');
+            const originalContent = payButton.innerHTML;
+            
+            payButton.innerHTML = '<i class="fa fa-spinner fa-spin text-xs opacity-80"></i><span class="tracking-wide">MEMPROSES...</span>';
+            payButton.disabled = true;
+
+            const selectedMethod = document.querySelector('input[name="payment_method"]').value;
+
+            try {
+                const response = await fetch("{{ route('payment.token', $transaction->transaction_code) }}", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    },
+                    body: JSON.stringify({ payment_method: selectedMethod })
+                });
+
+                const data = await response.json();
+
+                if (data.snap_token) {
+                    snap.pay(data.snap_token, {
+                        onSuccess: function(result){
+                            window.location.href = "{{ route('payment.success', $transaction->transaction_code) }}";
+                        },
+                        onPending: function(result){
+                            window.location.reload();
+                        },
+                        onError: function(result){
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Transaksi Gagal',
+                                text: 'Pembayaran gagal diproses oleh sistem.',
+                                confirmButtonColor: '#4f46e5'
+                            }).then(() => {
+                                window.location.reload();
+                            });
+                        },
+                        onClose: function(){
+                            payButton.innerHTML = originalContent;
+                            payButton.disabled = false;
+                            
+                            // Kirim sinyal pending ke backend
+                            fetch("{{ route('payment.pendingNotification', $transaction->transaction_code) }}", {
+                                method: 'POST',
+                                headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
+                            });
+
+                            // Notifikasi popup elegan pengganti alert() bawaan
+                            Swal.fire({
+                                icon: 'info',
+                                title: 'Pembayaran Ditunda',
+                                text: 'Silakan periksa ikon lonceng notifikasi pengguna untuk melanjutkan pembayaran nanti.',
+                                confirmButtonColor: '#4f46e5',
+                                confirmButtonText: 'Tutup'
+                            });
+                        }
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Gagal Memuat',
+                        text: data.error || "Kesalahan tidak dikenal saat menghubungi gerbang pembayaran.",
+                        confirmButtonColor: '#4f46e5'
+                    });
+                    payButton.innerHTML = originalContent;
+                    payButton.disabled = false;
+                }
+            } catch (error) {
+                console.error(error);
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Gangguan Koneksi',
+                    text: 'Terjadi kesalahan saat terhubung ke server. Silakan coba lagi.',
+                    confirmButtonColor: '#4f46e5'
+                });
+                payButton.innerHTML = originalContent;
+                payButton.disabled = false;
+            }
+        }
+    </script>
 </x-app-layout>

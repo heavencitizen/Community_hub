@@ -53,8 +53,10 @@ Route::get('/marketplace', [MarketplaceController::class, 'index'])->name('marke
 
 // ── 5. MODUL PAYMENT GATEWAY (Universal Checkout & Success) ─────────────────
 Route::get('/payment/checkout/{transactionCode}', [PaymentController::class, 'checkout'])->name('payment.checkout');
-Route::post('/payment/process/{transactionCode}', [PaymentController::class, 'process'])->name('payment.process');
+Route::post('/payment/{transactionCode}/token', [PaymentController::class, 'getToken'])->name('payment.token'); // Route baru untuk mengambil token dinamis spesifik per metode
+Route::post('/payment/{transactionCode}/pending-notification', [PaymentController::class, 'pendingNotification'])->name('payment.pendingNotification');
 Route::get('/payment/success/{transactionCode}', [PaymentController::class, 'success'])->name('payment.success');
+Route::post('/payment/webhook', [PaymentController::class, 'webhook'])->name('payment.webhook');
 
 // ── 6. MODUL PROFIL PUBLIK PENGGUNA (/users/{username}) ───────────────────
 Route::get('/users/{user:username}', [ProfileController::class, 'show'])->name('users.show');
