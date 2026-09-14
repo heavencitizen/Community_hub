@@ -12,7 +12,6 @@
                 </div>
 
                 <!-- Main Navigation Links in Header / Navigation Bar -->
-                <!-- Main Navigation Links in Header / Navigation Bar -->
                 <div class="hidden md:-my-px md:flex md:items-center md:space-x-0.5 lg:space-x-1" x-data="{ moreNav: false }">
                     <!-- 1. Beranda / Dashboard -->
                     @auth
@@ -63,7 +62,7 @@
                         <span>Donasi</span>
                     </a>
 
-                    <!-- Dropdown Pintasan "Lainnya" untuk Layar Menengah (Tablet / Laptop Kecil md & lg, hidden di xl+) -->
+                    <!-- Dropdown Pintasan "Lainnya" untuk Layar Menengah -->
                     <div class="relative xl:hidden" @click.away="moreNav = false">
                         <button @click="moreNav = !moreNav" 
                                 class="inline-flex items-center px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-all whitespace-nowrap {{ (request()->routeIs('articles.*') || request()->routeIs('donations.*')) ? 'text-indigo-600 bg-indigo-50/90 font-bold' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70' }}">
@@ -84,8 +83,80 @@
                 </div>
             </div>
 
-            <!-- Right Controls: Auth, Notification, Profile (Tablet & Desktop: md:flex) -->
+            <!-- Right Controls: LIVE SEARCH, Notification, Profile (Tablet & Desktop: md:flex) -->
             <div class="hidden md:flex md:items-center md:ms-2 lg:ms-4 space-x-1.5 lg:space-x-2.5 shrink-0">
+                
+                <!-- LIVE SEARCH GLOBAL (Desktop) -->
+                <div class="relative mr-1 lg:mr-2" x-data="{
+                    query: '{{ request('q', '') }}',
+                    results: { users: [], communities: [] },
+                    isLoading: false,
+                    showDropdown: false,
+                    async fetchSearch() {
+                        if(this.query.length < 2) {
+                            this.results = { users: [], communities: [] };
+                            this.showDropdown = false;
+                            return;
+                        }
+                        this.isLoading = true;
+                        try {
+                            const res = await fetch(`/search/live?q=${encodeURIComponent(this.query)}`);
+                            const data = await res.json();
+                            this.results = data || { users: [], communities: [] };
+                            this.showDropdown = true;
+                        } catch(e) {
+                            console.error('Error:', e);
+                        }
+                        this.isLoading = false;
+                    }
+                }" @click.away="showDropdown = false">
+                    <form action="{{ route('search.index') }}" method="GET" class="relative flex items-center">
+                        <input type="text" name="q" x-model="query" @input.debounce.500ms="fetchSearch()" @focus="if(query.length >= 2) showDropdown = true" placeholder="Cari..." 
+                               class="w-48 lg:w-56 pl-9 pr-8 py-1.5 bg-slate-100 border border-transparent rounded-full text-xs outline-none focus:bg-white focus:border-indigo-300 focus:ring-4 focus:ring-indigo-600/10 transition-all duration-300 text-slate-700 font-medium placeholder-slate-400" autocomplete="off">
+                        <i class="fa fa-search absolute left-3.5 text-slate-400 text-[10px]"></i>
+                        <i x-show="isLoading" style="display: none;" class="fa fa-spinner fa-spin absolute right-3.5 text-indigo-500 text-[10px]" x-cloak></i>
+                    </form>
+
+                    <div x-show="showDropdown && (results.users?.length > 0 || results.communities?.length > 0)" style="display: none;" x-transition x-cloak class="absolute top-full mt-2 right-0 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 py-2 z-50 overflow-hidden">
+                        <div class="max-h-80 overflow-y-auto divide-y divide-slate-100">
+                            <template x-if="results.users && results.users.length > 0">
+                                <div>
+                                    <div class="px-3 py-1.5 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-wider">Pengguna</div>
+                                    <template x-for="user in results.users" :key="'ud'+user.id">
+                                        <a :href="`/users/${user.username}`" class="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 transition">
+                                            <img :src="user.avatar_url" class="w-8 h-8 rounded-full object-cover border border-slate-200 shrink-0">
+                                            <div class="min-w-0 flex-1">
+                                                <p class="text-xs font-bold text-slate-800 truncate" x-text="user.name"></p>
+                                                <p class="text-[10px] text-slate-400 font-mono truncate" x-text="`@${user.username}`"></p>
+                                            </div>
+                                        </a>
+                                    </template>
+                                </div>
+                            </template>
+
+                            <template x-if="results.communities && results.communities.length > 0">
+                                <div>
+                                    <div class="px-3 py-1.5 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-wider">Komunitas</div>
+                                    <template x-for="com in results.communities" :key="'cd'+com.id">
+                                        <a :href="`/communities/${com.slug}`" class="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 transition">
+                                            <img :src="com.logo_url" class="w-8 h-8 rounded-xl object-cover border border-slate-200 shrink-0">
+                                            <div class="min-w-0 flex-1">
+                                                <p class="text-xs font-bold text-slate-800 truncate" x-text="com.name"></p>
+                                                <p class="text-[9px] font-bold text-indigo-500 uppercase tracking-wider mt-0.5" x-text="com.category"></p>
+                                            </div>
+                                        </a>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="p-2 border-t border-slate-100 bg-slate-50 text-center">
+                            <button type="button" @click="$el.closest('form').submit()" class="text-[10px] font-bold text-indigo-600 hover:underline block w-full">
+                                Lihat Semua Hasil &rarr;
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 @auth
                     <!-- Notification Bell Dropdown -->
                     <div class="relative" x-data="{ notifOpen: false }">
@@ -264,7 +335,76 @@
 
     <!-- Responsive Mobile Menu (md:hidden) -->
     <div :class="{'block': open, 'hidden': !open}" class="hidden md:hidden border-t border-slate-200 bg-white">
-        <div class="pt-2 pb-3 space-y-1 px-4">
+        
+        <!-- LIVE SEARCH GLOBAL (Mobile) -->
+        <div class="px-4 pt-4 pb-2" x-data="{
+            query: '{{ request('q', '') }}',
+            results: { users: [], communities: [] },
+            isLoading: false,
+            showDropdown: false,
+            async fetchSearch() {
+                if(this.query.length < 2) {
+                    this.results = { users: [], communities: [] };
+                    this.showDropdown = false;
+                    return;
+                }
+                this.isLoading = true;
+                try {
+                    const res = await fetch(`/search/live?q=${encodeURIComponent(this.query)}`);
+                    const data = await res.json();
+                    this.results = data || { users: [], communities: [] };
+                    this.showDropdown = true;
+                } catch(e) {
+                    console.error('Live Search Mobile Error:', e);
+                }
+                this.isLoading = false;
+            }
+        }" @click.away="showDropdown = false">
+            <form action="{{ route('search.index') }}" method="GET" class="relative">
+                <input type="text" name="q" x-model="query" @input.debounce.500ms="fetchSearch()" @focus="if(query.length >= 2) showDropdown = true" placeholder="Cari pengguna atau komunitas..." 
+                       class="w-full pl-9 pr-8 py-2 bg-slate-100 border border-transparent rounded-xl text-xs outline-none focus:bg-white focus:border-indigo-300 focus:ring-4 focus:ring-indigo-600/10 transition-all duration-300 text-slate-700 font-medium placeholder-slate-400" autocomplete="off">
+                <i class="fa fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 text-xs"></i>
+                <i x-show="isLoading" style="display: none;" class="fa fa-spinner fa-spin absolute right-3 top-1/2 transform -translate-y-1/2 text-indigo-500 text-[10px]" x-cloak></i>
+            </form>
+
+            <div x-show="showDropdown && (results.users?.length > 0 || results.communities?.length > 0)" style="display: none;" x-transition class="mt-2 bg-white rounded-xl border border-slate-200 py-1 shadow-sm overflow-hidden z-50 relative">
+                <div class="max-h-60 overflow-y-auto divide-y divide-slate-100">
+                    <template x-if="results.users && results.users.length > 0">
+                        <div>
+                            <div class="px-3 py-1.5 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-wider">Pengguna</div>
+                            <template x-for="user in results.users" :key="'mu'+user.id">
+                                <a :href="`/users/${user.username}`" class="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 transition">
+                                    <img :src="user.avatar_url" class="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0">
+                                    <div class="min-w-0 flex-1">
+                                        <p class="text-xs font-bold text-slate-800 truncate" x-text="user.name"></p>
+                                        <p class="text-[9px] text-slate-400 font-mono truncate" x-text="`@${user.username}`"></p>
+                                    </div>
+                                </a>
+                            </template>
+                        </div>
+                    </template>
+                    <template x-if="results.communities && results.communities.length > 0">
+                        <div>
+                            <div class="px-3 py-1.5 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-wider">Komunitas</div>
+                            <template x-for="com in results.communities" :key="'mc'+com.id">
+                                <a :href="`/communities/${com.slug}`" class="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 transition">
+                                    <img :src="com.logo_url" class="w-7 h-7 rounded-xl object-cover border border-slate-200 shrink-0">
+                                    <div class="min-w-0 flex-1">
+                                        <p class="text-xs font-bold text-slate-800 truncate" x-text="com.name"></p>
+                                        <p class="text-[8px] font-bold text-indigo-500 uppercase tracking-wider mt-0.5" x-text="com.category"></p>
+                                    </div>
+                                </a>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+                <div class="p-2 border-t border-slate-100 bg-slate-50 text-center">
+                    <button type="button" @click="$el.closest('form').submit()" class="text-[10px] font-bold text-indigo-600 hover:underline block w-full">Lihat Semua Hasil &rarr;</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="pt-1 pb-3 space-y-1 px-4">
             @auth
                 <x-responsive-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                     <i class="fa fa-home w-5 text-indigo-500"></i> Dashboard

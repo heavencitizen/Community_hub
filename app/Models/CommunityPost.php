@@ -54,4 +54,34 @@ class CommunityPost extends Model
 
         return $this->likes()->where('user_id', $userId)->exists();
     }
+
+    /**
+     * Format konten postingan agar hashtag menjadi teks tebal berwarna dan bisa diklik
+     */
+    public function getFormattedContentAttribute()
+    {
+        // 1. Amankan teks dari XSS (Cross-Site Scripting)
+        $text = e($this->content);
+
+        // 2. Cari kata yang diawali '#' dan ubah menjadi tag HTML berwarna
+        // Pola ini mendeteksi '#' yang diikuti huruf, angka, atau garis bawah
+        $formattedText = preg_replace(
+            '/#([a-zA-Z0-9_]+)/', 
+            '<a href="/search?q=%23$1" class="text-indigo-600 font-extrabold hover:underline">#$1</a>', 
+            $text
+        );
+
+        return $formattedText;
+    }
+
+    /**
+     * Dapatkan URL lengkap untuk file media (gambar/video) dari folder storage
+     */
+    public function getMediaFullPathAttribute()
+    {
+        if ($this->media_url) {
+            return asset('storage/' . $this->media_url);
+        }
+        return null;
+    }
 }

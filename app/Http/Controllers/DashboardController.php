@@ -26,6 +26,11 @@ class DashboardController extends Controller
     {
         $user = auth()->user();
 
+        // PROTEKSI KEAMANAN: Jika belum login, kembalikan ke halaman depan (mencegah error pada baris 30)
+        if (!$user) {
+            return redirect()->route('home');
+        }
+
         // 1. Dapatkan daftar ID komunitas yang diikuti atau dimiliki pengguna
         $myMembershipIds = $user->communityMemberships()
             ->where('status', 'active')

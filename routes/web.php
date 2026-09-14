@@ -14,6 +14,7 @@ use App\Http\Controllers\MarketplaceController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TicketController;
 use Illuminate\Support\Facades\Route;
@@ -27,6 +28,10 @@ use Illuminate\Support\Facades\Route;
 // Route root page to welcome view & dashboard
 Route::get('/', [DashboardController::class, 'welcome'])->name('home');
 Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
+// ── FITUR PENCARIAN GLOBAL ──────────────────────────────────────────────────
+Route::get('/search/live', [SearchController::class, 'liveSearch'])->name('search.live');
+Route::get('/search', [SearchController::class, 'index'])->name('search.index');
 
 // ── 1. MODUL EVENT (Public Catalog & Detail) ───────────────────────────────
 Route::get('/events', [EventController::class, 'index'])->name('events.index');
@@ -53,7 +58,7 @@ Route::get('/marketplace', [MarketplaceController::class, 'index'])->name('marke
 
 // ── 5. MODUL PAYMENT GATEWAY (Universal Checkout & Success) ─────────────────
 Route::get('/payment/checkout/{transactionCode}', [PaymentController::class, 'checkout'])->name('payment.checkout');
-Route::post('/payment/{transactionCode}/token', [PaymentController::class, 'getToken'])->name('payment.token'); // Route baru untuk mengambil token dinamis spesifik per metode
+Route::post('/payment/{transactionCode}/token', [PaymentController::class, 'getToken'])->name('payment.token');
 Route::post('/payment/{transactionCode}/pending-notification', [PaymentController::class, 'pendingNotification'])->name('payment.pendingNotification');
 Route::get('/payment/success/{transactionCode}', [PaymentController::class, 'success'])->name('payment.success');
 Route::post('/payment/webhook', [PaymentController::class, 'webhook'])->name('payment.webhook');
@@ -95,10 +100,12 @@ Route::middleware('auth')->group(function () {
     Route::delete('/products/{product}', [MarketplaceController::class, 'destroy'])->name('communities.products.destroy');
     Route::post('/products/{product}/buy', [MarketplaceController::class, 'buy'])->name('communities.products.buy');
 
-    // ── Fitur Lelang Komunitas ─────────────────────────────────────────────
+    // ── Fitur Lelang Komunitas (TERMASUK COD & JAMINAN) ────────────────────
     Route::post('/communities/{community}/auctions', [AuctionController::class, 'store'])->name('communities.auctions.store');
+    Route::post('/auctions/{auction}/deposit', [AuctionController::class, 'payDeposit'])->name('communities.auctions.deposit');
     Route::post('/auctions/{auction}/bid', [AuctionController::class, 'bid'])->name('communities.auctions.bid');
     Route::post('/auctions/{auction}/checkout', [AuctionController::class, 'checkoutWinner'])->name('communities.auctions.checkout');
+    Route::post('/auctions/{auction}/cod-complete', [AuctionController::class, 'completeCod'])->name('communities.auctions.codComplete');
     Route::post('/auctions/{auction}/close', [AuctionController::class, 'close'])->name('communities.auctions.close');
     Route::post('/auctions/{auction}/cancel', [AuctionController::class, 'cancel'])->name('communities.auctions.cancel');
     Route::post('/auctions/{auction}/wanprestasi', [AuctionController::class, 'declareWanprestasi'])->name('communities.auctions.wanprestasi');

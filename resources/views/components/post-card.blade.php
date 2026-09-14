@@ -144,18 +144,20 @@
         @endauth
     </div>
 
-    <!-- Post Body Content -->
+    <!-- Post Body Content (HASHTAG FIX) -->
     <div class="text-xs text-slate-700 leading-relaxed space-y-2 whitespace-pre-line">
-        <p>{{ $post->content }}</p>
+        <!-- Render string HTML dari Model untuk memunculkan warna pada Hashtag -->
+        <p>{!! $post->formatted_content !!}</p>
     </div>
 
-    <!-- Post Media Attachment -->
+    <!-- Post Media Attachment (IMAGE URL FIX) -->
     @if($post->media_url)
         <div class="rounded-xl overflow-hidden bg-slate-900 max-h-96 flex items-center justify-center border border-slate-100">
             @if(in_array(pathinfo($post->media_url, PATHINFO_EXTENSION), ['mp4', 'mov', 'webm']))
-                <video src="{{ asset('storage/' . $post->media_url) }}" controls class="w-full max-h-96 object-contain"></video>
+                <!-- Menambahkan fungsi fallback asset() untuk keamanan ekstra -->
+                <video src="{{ $post->media_full_path ?? asset('storage/' . $post->media_url) }}" controls class="w-full max-h-96 object-contain"></video>
             @else
-                <img src="{{ asset('storage/' . $post->media_url) }}" alt="Post Media" class="w-full max-h-96 object-cover">
+                <img src="{{ $post->media_full_path ?? asset('storage/' . $post->media_url) }}" alt="Post Media" class="w-full max-h-96 object-cover">
             @endif
         </div>
     @endif

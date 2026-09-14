@@ -15,12 +15,8 @@ use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class AuctionController extends Controller
 {
-    /**
-     * Katalog Publik Arena Lelang Komunitas
-     */
     public function index(Request $request)
     {
-        // Auto-finalize lelang yang sudah lewat waktu
         CommunityAuction::where('status', 'active')
             ->where('end_time', '<=', now())
             ->each(function (CommunityAuction $auction) {
@@ -29,7 +25,6 @@ class AuctionController extends Controller
 
         $query = CommunityAuction::with(['community', 'creator', 'winner', 'bids.user']);
 
-        // Filter Pencarian
         if ($request->filled('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -38,12 +33,10 @@ class AuctionController extends Controller
             });
         }
 
-        // Filter Komunitas
         if ($request->filled('community_id')) {
             $query->where('community_id', $request->community_id);
         }
 
-        // Filter Status
         $statusFilter = $request->get('status', 'all');
         if ($statusFilter === 'live') {
             $query->where('status', 'active')
@@ -59,7 +52,6 @@ class AuctionController extends Controller
             $query->where('status', 'completed');
         }
 
-        // Urutan: Yang live berakhir paling cepat ditaruh paling atas, diikuti terjadwal
         $nowStr = now()->toDateTimeString();
         $auctions = $query->orderByRaw("
             CASE 
@@ -73,7 +65,6 @@ class AuctionController extends Controller
 
         $communities = Community::where('status', 'active')->get();
 
-        // Hitung statistik ringkas untuk header
         $stats = [
             'total_live' => CommunityAuction::where('status', 'active')
                 ->where(function ($q) {
@@ -89,9 +80,6 @@ class AuctionController extends Controller
         return view('auctions.index', compact('auctions', 'communities', 'stats', 'statusFilter'));
     }
 
-    /**
-     * Buat lelang baru (Hanya Ketua Komunitas / Super Admin)
-     */
     public function store(Request $request, Community $community)
     {
         if ($community->user_id !== auth()->id() && ! auth()->user()->isSuperAdmin()) {
@@ -143,33 +131,77 @@ class AuctionController extends Controller
         return back()->with('success', 'Program lelang komunitas berhasil dibuka!');
     }
 
-    /**
-     * Ajukan penawaran lelang (Place Bid)
-     */
+    public function payDeposit(CommunityAuction $auction)
+    {
+        if ($auction->user_id === auth()->id()) {
+            return back()->with('error', 'Penyelenggara tidak perlu membayar uang jaminan.');
+        }
+
+        if (!$auction->isActive()) {
+            return back()->with('error', 'Sesi lelang ini belum dimulai atau sudah ditutup.');
+        }
+
+        $existing = Transaction::where('type', 'auction_deposit')
+            ->where('reference_id', $auction->id)
+            ->where('user_id', auth()->id())
+            ->first();
+
+        if ($existing) {
+            if ($existing->payment_status === 'completed') {
+                return back()->with('success', 'Anda sudah membayar uang jaminan untuk lelang ini. Silakan mulai menawar!');
+            }
+            return redirect()->route('payment.checkout', $existing->transaction_code);
+        }
+
+        $depositAmount = max(50000, $auction->starting_price * 0.05);
+
+        $transaction = Transaction::create([
+            'transaction_code' => 'DEP-'.strtoupper(Str::random(10)),
+            'user_id' => auth()->id(),
+            'type' => 'auction_deposit',
+            'reference_id' => $auction->id,
+            'amount' => $depositAmount,
+            'platform_fee_percent' => 0,
+            'platform_fee_amount' => 0,
+            'total_amount' => $depositAmount,
+            'payment_method' => 'qris',
+            'payment_status' => 'pending',
+            'notes' => 'Uang Jaminan Peserta Lelang: '.$auction->title,
+        ]);
+
+        return redirect()->route('payment.checkout', $transaction->transaction_code);
+    }
+
     public function bid(Request $request, CommunityAuction $auction)
     {
         return DB::transaction(function () use ($request, $auction) {
-            // Lock record lelang untuk mencegah race condition (pessimistic lock)
             $lockedAuction = CommunityAuction::where('id', $auction->id)->lockForUpdate()->firstOrFail();
-
-            // Auto finalize jika waktu berakhir sudah terlewati
             $lockedAuction->autoFinalizeIfNeeded();
 
             if ($lockedAuction->isEnded() || $lockedAuction->status !== 'active') {
                 return back()->with('error', 'Lelang ini telah berakhir atau ditutup.');
             }
 
-            // Cek jika lelang masih berstatus terjadwal (belum dimulai)
             if ($lockedAuction->isScheduled()) {
                 return back()->with('error', 'Lelang ini belum dimulai. Sesi open bidding baru akan dibuka pada '.$lockedAuction->start_time->format('d M Y, H:i').' WIB.');
             }
 
-            // Mencegah pemilik menawar barang sendiri
             if ($lockedAuction->user_id === auth()->id()) {
                 return back()->with('error', 'Anda adalah penyelenggara lelang ini, tidak dapat menawar barang sendiri.');
             }
 
-            // Mencegah menawar jika sudah menjadi penawar tertinggi
+            // --- PROTEKSI UANG JAMINAN ---
+            $hasPaidDeposit = Transaction::where('type', 'auction_deposit')
+                ->where('reference_id', $lockedAuction->id)
+                ->where('user_id', auth()->id())
+                ->where('payment_status', 'completed')
+                ->exists();
+
+            if (!$hasPaidDeposit) {
+                return back()->with('error', 'AKSES DITOLAK: Anda harus membayar Uang Jaminan Lelang terlebih dahulu sebelum dapat mengajukan penawaran.');
+            }
+            // -----------------------------
+
             if ($lockedAuction->winner_id === auth()->id()) {
                 return back()->with('error', 'Anda sudah memegang tawaran tertinggi saat ini.');
             }
@@ -179,79 +211,68 @@ class AuctionController extends Controller
             $request->validate([
                 'bid_amount' => 'required|numeric|min:'.$minBid,
             ], [
-                'bid_amount.min' => 'Nilai tawaran minimal adalah Rp'.number_format($minBid, 0, ',', '.').' (Tawaran tertinggi + kelipatan bid).',
+                'bid_amount.min' => 'Nilai tawaran minimal adalah Rp'.number_format($minBid, 0, ',', '.').'.',
             ]);
 
             $previousWinnerId = $lockedAuction->winner_id;
             $previousPrice = (float) $lockedAuction->current_price;
 
-            // Rekam penawar sebelumnya sebagai pemenang cadangan (runner-up)
             if ($previousWinnerId && $previousWinnerId !== auth()->id()) {
                 $lockedAuction->recordDisplacedLeader($previousWinnerId, $previousPrice);
             }
 
-            // Catat bid ke database
             AuctionBid::create([
                 'auction_id' => $lockedAuction->id,
                 'user_id' => auth()->id(),
                 'bid_amount' => $request->bid_amount,
             ]);
 
-            // Terapkan Anti-Sniping (+2 menit jika tawaran masuk di <120 detik terakhir)
             $extended = $lockedAuction->applyAntiSnipingIfNeeded();
 
-            // Update current price dan pemenang sementara
             $lockedAuction->update([
                 'current_price' => $request->bid_amount,
                 'winner_id' => auth()->id(),
             ]);
 
-            // Kirim notifikasi ke penawar tertinggi sebelumnya jika ada dan bukan diri sendiri (Outbid Notification)
             if ($previousWinnerId && $previousWinnerId !== auth()->id()) {
                 UserNotification::send(
                     $previousWinnerId,
                     auth()->id(),
                     'auction_outbid',
                     'Tawaran Anda Telah Disalip!',
-                    'Tawaran Anda untuk "'.$lockedAuction->title.'" telah disalip oleh '.auth()->user()->name.' dengan penawaran Rp'.number_format($request->bid_amount, 0, ',', '.').'. Pasang tawaran lebih tinggi untuk memenangkan lelang!',
+                    'Tawaran Anda untuk "'.$lockedAuction->title.'" telah disalip oleh '.auth()->user()->name.' (Rp'.number_format($request->bid_amount, 0, ',', '.').'). Pasang tawaran lebih tinggi!',
                     route('communities.show', $lockedAuction->community->slug).'?tab=auctions',
                     'fa-arrow-up-right-dots',
                     'text-rose-500'
                 );
             }
 
-            // Kirim notifikasi ke penyelenggara/ketua lelang
             UserNotification::send(
                 $lockedAuction->user_id,
                 auth()->id(),
                 'auction_new_bid',
-                'Tawaran Baru Masuk di Lelang Anda',
-                auth()->user()->name.' mengajukan penawaran sebesar Rp'.number_format($request->bid_amount, 0, ',', '.').' pada "'.$lockedAuction->title.'".',
+                'Tawaran Baru Masuk di Lelang',
+                auth()->user()->name.' menawar Rp'.number_format($request->bid_amount, 0, ',', '.').' pada "'.$lockedAuction->title.'".',
                 route('communities.show', $lockedAuction->community->slug).'?tab=auctions',
                 'fa-gavel',
                 'text-purple-600'
             );
 
-            $successMsg = 'Tawaran lelang sebesar Rp'.number_format($request->bid_amount, 0, ',', '.').' berhasil diajukan!';
-            if ($extended) {
-                $successMsg .= ' Sesi lelang otomatis diperpanjang +2 menit (Anti-Sniping).';
-            }
+            $successMsg = 'Tawaran lelang berhasil diajukan!';
+            if ($extended) $successMsg .= ' Sesi lelang otomatis diperpanjang +2 menit (Anti-Sniping).';
 
             return back()->with('success', $successMsg);
         });
     }
 
-    /**
-     * Tutup sesi lelang secara manual oleh Ketua Komunitas / Super Admin
-     */
     public function close(CommunityAuction $auction)
     {
         if ($auction->community->user_id !== auth()->id() && ! auth()->user()->isSuperAdmin() && $auction->user_id !== auth()->id()) {
-            return back()->with('error', 'Hanya ketua komunitas atau penyelenggara yang berhak menutup sesi lelang.');
+            return back()->with('error', 'Akses ditolak.');
         }
 
         if (in_array($auction->status, ['closed', 'completed', 'cancelled', 'wanprestasi'])) {
-            return back()->with('error', 'Sesi lelang ini sudah tidak dalam keadaan aktif.');
+            return back()->with('error', 'Sesi lelang ini sudah tidak aktif.');
         }
 
         $highestBid = $auction->bids()->first();
@@ -268,145 +289,184 @@ class AuctionController extends Controller
                 auth()->id(),
                 'auction_won',
                 'Selamat! Anda Memenangkan Lelang',
-                'Sesi lelang "'.$auction->title.'" di '.$auction->community->name.' telah resmi ditutup dan Anda adalah pemenangnya (Rp'.number_format($auction->current_price, 0, ',', '.').'). Silakan lakukan pelunasan dalam batas waktu 48 jam.',
+                'Sesi lelang "'.$auction->title.'" resmi ditutup dan Anda adalah pemenangnya. Silakan lunasi dalam 48 jam.',
                 route('communities.show', $auction->community->slug).'?tab=auctions',
                 'fa-trophy',
                 'text-amber-500'
             );
         }
 
-        return back()->with('success', 'Sesi lelang berhasil ditutup dan pemenang telah ditetapkan!');
+        return back()->with('success', 'Sesi lelang berhasil ditutup!');
     }
 
-    /**
-     * Batalkan lelang oleh Ketua Komunitas / Super Admin
-     */
     public function cancel(CommunityAuction $auction)
     {
         if ($auction->community->user_id !== auth()->id() && ! auth()->user()->isSuperAdmin() && $auction->user_id !== auth()->id()) {
-            return back()->with('error', 'Hanya ketua komunitas atau penyelenggara yang berhak membatalkan program lelang.');
+            return back()->with('error', 'Akses ditolak.');
         }
 
         if ($auction->status === 'completed') {
-            return back()->with('error', 'Lelang yang sudah selesai dibayar tidak dapat dibatalkan.');
+            return back()->with('error', 'Lelang yang selesai tidak dapat dibatalkan.');
         }
 
-        $auction->update([
-            'status' => 'cancelled',
-        ]);
-
-        return back()->with('success', 'Program lelang telah dibatalkan.');
+        $auction->update(['status' => 'cancelled']);
+        return back()->with('success', 'Lelang dibatalkan.');
     }
 
-    /**
-     * Selesaikan lelang dan proses checkout pemenang
-     */
-    public function checkoutWinner(CommunityAuction $auction)
+    public function checkoutWinner(Request $request, CommunityAuction $auction)
     {
-        if (! $auction->winner_id) {
-            return back()->with('error', 'Lelang belum memiliki pemenang.');
-        }
-
-        if ($auction->status === 'completed') {
-            return back()->with('error', 'Transaksi lelang ini sudah lunas dibayar.');
-        }
-
+        if (! $auction->winner_id) return back()->with('error', 'Lelang belum ada pemenang.');
+        if ($auction->status === 'completed') return back()->with('error', 'Sudah lunas.');
         if (auth()->id() !== $auction->winner_id && auth()->id() !== $auction->community->user_id && ! auth()->user()->isSuperAdmin()) {
-            return back()->with('error', 'Hanya pemenang lelang atau ketua komunitas yang dapat memproses transaksi ini.');
+            return back()->with('error', 'Akses ditolak.');
         }
 
-        // Cek jika sudah ada transaksi pending untuk lelang ini
-        $existing = Transaction::where('type', 'auction')
+        $paymentMethod = $request->input('payment_method', 'system');
+
+        $existing = Transaction::where('type', 'auction')->where('reference_id', $auction->id)
+            ->where('user_id', $auction->winner_id)->whereIn('payment_status', ['pending', 'pending_cod'])->first();
+
+        // POTONGAN OTOMATIS: Uang Jaminan
+        $depositPaid = Transaction::where('type', 'auction_deposit')
             ->where('reference_id', $auction->id)
             ->where('user_id', $auction->winner_id)
-            ->where('payment_status', 'pending')
-            ->first();
+            ->where('payment_status', 'completed')
+            ->value('amount') ?? 0;
 
-        if ($existing) {
-            return redirect()->route('payment.checkout', $existing->transaction_code);
+        $feeData = $auction->calculateFee($auction->winner_id);
+        
+        // Tagihan akhir = (Harga Lelang + Fee) - Uang Jaminan
+        $finalTagihan = max(0, $feeData['total_amount'] - $depositPaid);
+
+        // Jika Pemenang Memilih COD
+        if ($paymentMethod === 'cod') {
+            if ($existing) {
+                $existing->update([
+                    'payment_method' => 'cod', 
+                    'payment_status' => 'pending_cod', 
+                    'notes' => 'Pelunasan Lelang COD: '.$auction->title.' (Sisa Tagihan: Rp'.number_format($finalTagihan, 0, ',', '.').')'
+                ]);
+            } else {
+                Transaction::create([
+                    'transaction_code' => 'COD-'.strtoupper(Str::random(10)),
+                    'user_id' => $auction->winner_id,
+                    'type' => 'auction',
+                    'reference_id' => $auction->id,
+                    'amount' => $auction->current_price,
+                    'platform_fee_percent' => $feeData['fee_percent'],
+                    'platform_fee_amount' => $feeData['fee_amount'],
+                    'total_amount' => $finalTagihan,
+                    'payment_method' => 'cod',
+                    'payment_status' => 'pending_cod',
+                    'notes' => 'Pelunasan Lelang COD: '.$auction->title.' (Sisa Tagihan: Rp'.number_format($finalTagihan, 0, ',', '.').')',
+                ]);
+            }
+
+            UserNotification::send(
+                $auction->user_id, auth()->id(), 'auction_cod', 'Pemenang Memilih COD',
+                auth()->user()->name.' memilih opsi Bayar di Tempat (COD) untuk melunasi "'.$auction->title.'". Silakan hubungi pemenang untuk serah terima.',
+                route('communities.show', $auction->community->slug).'?tab=auctions', 'fa-handshake', 'text-emerald-600'
+            );
+
+            return back()->with('success', 'Metode Bayar di Tempat (COD) berhasil dipilih! Silakan hubungi penyelenggara untuk serah terima barang.');
         }
 
-        // Hitung fee lelang: 1% jika anggota komunitas, 2% jika umum
-        $feeData = $auction->calculateFee($auction->winner_id);
-
+        // Jika Pemenang Memilih Transfer Midtrans (System)
         $transactionCode = 'AUCT-'.strtoupper(Str::random(10));
-
-        $transaction = Transaction::create([
-            'transaction_code' => $transactionCode,
-            'user_id' => $auction->winner_id,
-            'type' => 'auction',
-            'reference_id' => $auction->id,
-            'amount' => $auction->current_price,
-            'platform_fee_percent' => $feeData['fee_percent'],
-            'platform_fee_amount' => $feeData['fee_amount'],
-            'total_amount' => $feeData['total_amount'],
-            'payment_method' => 'qris',
-            'payment_status' => 'pending',
-            'notes' => 'Penyelesaian lelang '.$auction->title.' komunitas '.$auction->community->name,
-        ]);
+        
+        if ($existing) {
+            $existing->update([
+                'payment_method' => 'qris', 
+                'payment_status' => 'pending', 
+                'transaction_code' => $transactionCode
+            ]);
+            $transaction = $existing;
+        } else {
+            $transaction = Transaction::create([
+                'transaction_code' => $transactionCode,
+                'user_id' => $auction->winner_id,
+                'type' => 'auction',
+                'reference_id' => $auction->id,
+                'amount' => $auction->current_price,
+                'platform_fee_percent' => $feeData['fee_percent'],
+                'platform_fee_amount' => $feeData['fee_amount'],
+                'total_amount' => $finalTagihan,
+                'payment_method' => 'qris',
+                'payment_status' => 'pending',
+                'notes' => 'Pelunasan Lelang: '.$auction->title.' (Diposting Uang Jaminan Rp'.number_format($depositPaid, 0, ',', '.').')',
+            ]);
+        }
 
         return redirect()->route('payment.checkout', $transaction->transaction_code);
     }
 
     /**
-     * Gugurkan pemenang wanprestasi & alihkan ke pemenang cadangan (runner-up)
+     * FUNGSI BARU: Konfirmasi COD Selesai (Oleh Ketua/Penyelenggara)
      */
+    public function completeCod(CommunityAuction $auction)
+    {
+        if ($auction->community->user_id !== auth()->id() && $auction->user_id !== auth()->id() && !auth()->user()->isSuperAdmin()) {
+            return back()->with('error', 'Akses ditolak.');
+        }
+
+        $transaction = Transaction::where('type', 'auction')
+            ->where('reference_id', $auction->id)
+            ->where('payment_method', 'cod')
+            ->where('payment_status', 'pending_cod')
+            ->first();
+
+        if ($transaction) {
+            $transaction->update(['payment_status' => 'completed']);
+        }
+        
+        $auction->update(['status' => 'completed']);
+
+        UserNotification::send(
+            $auction->winner_id, auth()->id(), 'auction_cod_success', 'Transaksi Selesai',
+            'Penyelenggara telah mengonfirmasi pembayaran COD untuk "'.$auction->title.'". Lelang resmi dinyatakan Lunas.',
+            route('communities.show', $auction->community->slug).'?tab=auctions', 'fa-check-circle', 'text-emerald-600'
+        );
+
+        return back()->with('success', 'Transaksi COD berhasil dikonfirmasi dan Lelang resmi dinyatakan Lunas!');
+    }
+
     public function declareWanprestasi(CommunityAuction $auction)
     {
         if ($auction->community->user_id !== auth()->id() && ! auth()->user()->isSuperAdmin() && $auction->user_id !== auth()->id()) {
-            return back()->with('error', 'Hanya ketua komunitas atau penyelenggara lelang yang berhak memproses status wanprestasi.');
+            return back()->with('error', 'Akses ditolak.');
         }
-
         if (! $auction->isAwaitingPayment() && ! $auction->isWanprestasi()) {
-            return back()->with('error', 'Lelang ini tidak dalam status menunggu pelunasan.');
+            return back()->with('error', 'Status tidak valid.');
         }
 
         $hadRunnerUp = $auction->runner_up_id !== null;
         $auction->markAsWanprestasi();
 
         if ($hadRunnerUp) {
-            return back()->with('success', 'Pemenang utama dinyatakan wanprestasi. Hak penebusan lelang berhasil dialihkan ke Pemenang Cadangan (Runner-up) dengan batas waktu 48 jam.');
+            return back()->with('success', 'Pemenang utama dinyatakan wanprestasi. Hak penebusan lelang berhasil dialihkan ke Pemenang Cadangan (Runner-up).');
         }
-
-        return back()->with('success', 'Pemenang lelang dinyatakan wanprestasi dan sesi lelang telah resmi ditutup.');
+        return back()->with('success', 'Pemenang lelang dinyatakan wanprestasi dan sesi lelang telah resmi ditutup (Uang Jaminan ditahan sistem).');
     }
 
-    /**
-     * Unduh / Tampilkan Kutipan Hasil Lelang CommunityHub (Digital Deed)
-     */
     public function certificate(CommunityAuction $auction)
     {
         if (! $auction->winner_id && ! in_array($auction->status, ['closed', 'completed'])) {
-            return redirect()->route('communities.show', $auction->community->slug)
-                ->with('error', 'Kutipan Hasil Lelang hanya tersedia untuk lelang yang telah memiliki pemenang.');
+            return redirect()->route('communities.show', $auction->community->slug)->with('error', 'Belum ada pemenang.');
         }
-
         $auction->load(['community', 'creator', 'winner', 'runnerUp', 'bids.user']);
-
         $qrUrl = route('communities.auctions.certificate', $auction->id);
         $qrCode = QrCode::size(140)->color(15, 23, 42)->generate($qrUrl);
-
         $feeData = $auction->calculateFee($auction->winner_id);
-
         return view('auctions.certificate', compact('auction', 'qrCode', 'feeData'));
     }
 
-    /**
-     * Real-time polling endpoint for live auction ticker
-     */
     public function ticker(CommunityAuction $auction)
     {
         $auction->autoFinalizeIfNeeded();
-
         $winner = null;
         if ($auction->winner) {
-            $winner = [
-                'id' => $auction->winner->id,
-                'name' => $auction->winner->name,
-                'avatar' => $auction->winner->avatar_url,
-            ];
+            $winner = ['id' => $auction->winner->id, 'name' => $auction->winner->name, 'avatar' => $auction->winner->avatar_url];
         }
-
         $minNextBid = (float) $auction->current_price + (float) $auction->bid_increment;
 
         return response()->json([

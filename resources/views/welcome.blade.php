@@ -194,16 +194,18 @@
                     }"
                     class="max-w-md mx-auto pt-1 sm:pt-2"
                 >
+                    <!-- Form Diperbarui ke Route Pencarian Global -->
                     <form
-                        action="{{ route('communities.index') }}"
+                        action="{{ route('search.index') }}"
                         method="GET"
                         class="relative p-1 sm:p-1.5 rounded-xl bg-slate-50/95 border border-slate-200 shadow-inner flex items-center gap-1.5 sm:gap-2 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:bg-white focus-within:border-indigo-500 transition-all duration-200"
                     >
                         <i class="fa fa-search text-slate-400 pl-2.5 sm:pl-3 text-xs"></i>
 
+                        <!-- Name diubah menjadi "q" -->
                         <input
                             type="text"
-                            name="search"
+                            name="q"
                             :placeholder="currentText || 'Cari komunitas, lelang, tiket event, produk hobi...'"
                             placeholder="Cari komunitas, lelang, tiket event, produk hobi..."
                             class="flex-grow bg-transparent border-none text-slate-900 placeholder-slate-400 text-xs focus:ring-0 focus:outline-none py-1.5 px-1 font-medium transition-all"
